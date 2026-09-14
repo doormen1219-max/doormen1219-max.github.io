@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#111111">
+<link rel="manifest" href="manifest.json">
+<title>PriceTag Scanner</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#111;color:#fff;font-family:Arial,sans-serif}
+header{padding:14px 16px;font-size:20px;font-weight:700;background:#181818}
+main{max-width:700px;margin:auto;padding:12px}
+#reader{width:100%;background:#000;border-radius:12px;overflow:hidden;min-height:300px}
+.controls{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
+button{border:0;border-radius:10px;padding:15px;font-size:16px;font-weight:700}
+.primary{background:#fff;color:#111}.secondary{background:#333;color:#fff}
+#status{padding:10px 2px;color:#bbb;min-height:42px}
+table{width:100%;border-collapse:collapse;background:#191919;font-size:13px}
+th,td{padding:8px;border-bottom:1px solid #333;text-align:left;vertical-align:top}
+th{position:sticky;top:0;background:#222}
+#count{font-size:14px;color:#bbb;margin:8px 0}
+.small{font-size:12px;color:#999;line-height:1.4}
+</style>
+</head>
+<body>
+<header>PriceTag Scanner</header>
+<main>
+<div id="reader"></div>
+<div class="controls">
+<button id="start" class="primary">ЗАПУСТИТЬ КАМЕРУ</button>
+<button id="scan" class="secondary">СФОТОГРАФИРОВАТЬ</button>
+<button id="export" class="secondary">ЭКСПОРТ XLSX</button>
+<button id="clear" class="secondary">ОЧИСТИТЬ</button>
+</div>
+<div id="status">Готов.</div>
+<div id="count">Отсканировано: 0</div>
+<div class="small">Для быстрого режима держи ценник целиком в кадре. 2D-код читается отдельно, текст — OCR.</div>
+<table><thead><tr><th>Название</th><th>Цена</th><th>Дата</th><th>Ед.</th><th>2D-код</th></tr></thead><tbody id="rows"></tbody></table>
+</main>
+
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<script>
+let qr, stream, worker, rows=JSON.parse(localStorage.getItem("priceRows")||"[]");
+const $=id=>document.getElementById(id);
+function render(){ $("rows").innerHTML=rows.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.price)}</td><td>${esc(r.date)}</td><td>${esc(r.unit)}</td><td>${esc(r.code)}</td></tr>`).join("");$("count").textContent="Отсканировано: "+rows.length;localStorage.setItem("priceRows",JSON.stringify(rows));}
+function esc(s){return String(s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+function parse(text,code){
+ let lines=text.split(/\n/).map(x=>x.trim().replace(/\s+/g," ")).filter(Boolean);
+ let date=(text.match(/\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b/)||[""])[0];
+ let price=(text.match(/(?<!\d)\d{1,6}(?:[.,]\d{1,2})?\s*(?:₽|руб\.?|р\.)?/i)||[""])[0].trim();
+ let units=["шт","кг","г","л","мл","уп","упак","м","мес"];
+ let unit=lines.find(x=>units.includes(x.toLowerCase().replace(".","")))||"";
+ let candidates=lines.filter(x=>x!==date && x!==price && x!==unit && !/^\d[\d\s.,₽рубРр-]*$/.test(x));
+ let name=candidates.sort((a,b)=>b.length-a.length)[0]||"";
+ return {name,price,date,unit,code};
+}
+async function getOCR(canvas){
+ $("status").textContent="OCR...";
+ if(!worker) worker=await Tesseract.createWorker("rus+eng",1,{logger:m=>{if(m.status==="recognizing text")$("status").textContent="OCR "+Math.round(m.progress*100)+"%";}});
+ const {data}=await worker.recognize(canvas); return data.text||"";
+}
+async function decode(canvas){
+ try{
+  const detector=new BarcodeDetector({formats:["qr_code","data_matrix","pdf417","aztec","code_128","ean_13","ean_8"]});
+  const a=await detector.detect(canvas); return a[0]?.rawValue||"";
+ }catch(e){return "";}
+}
+async function capture(){
+ if(!stream){$("status").textContent="Сначала запусти камеру.";return;}
+ $("status").textContent="Снимаю...";
+ const v=document.querySelector("#reader video");
+ if(!v){$("status").textContent="Камера ещё запускается.";return;}
+ const c=document.createElement("canvas"); c.width=v.videoWidth;c.height=v.videoHeight;c.getContext("2d").drawImage(v,0,0);
+ const code=await decode(c);
+ const text=await getOCR(c);
+ const row=parse(text,code); row.raw=text;
+ rows.push(row);render();$("status").textContent="Готово. Следующий ценник.";
+}
+async function startCamera(){
+ try{
+  stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},audio:false});
+  const video=document.createElement("video");video.autoplay=true;video.playsInline=true;video.srcObject=stream;
+  $("reader").innerHTML="";$("reader").appendChild(video); video.style.width="100%";
+  $("status").textContent="Камера готова.";
+ }catch(e){$("status").textContent="Нет доступа к камере: "+e.message;}
+}
+$("start").onclick=startCamera;$("scan").onclick=capture;
+$("clear").onclick=()=>{if(confirm("Удалить все строки?")){rows=[];render();}};
+$("export").onclick=()=>{
+ if(!rows.length){$("status").textContent="Нет данных.";return;}
+ const data=rows.map((r,i)=>({"№":i+1,"Название":r.name,"Цена":r.price,"Дата":r.date,"Ед.":r.unit,"2D-код":r.code,"OCR":r.raw||""}));
+ const ws=XLSX.utils.json_to_sheet(data), wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Ценники");
+ XLSX.writeFile(wb,"price_tags.xlsx");$("status").textContent="XLSX сохранён.";
+};
+render();
+if("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(()=>{});
+</script>
+</body>
+</html>
