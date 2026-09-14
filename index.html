@@ -1,51 +1,3 @@
-<!doctype html>
-<html lang="ru">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#111">
-<link rel="manifest" href="manifest.json">
-<title>PriceTag Scanner</title>
-<style>
-*{box-sizing:border-box}body{margin:0;background:#101010;color:#f5f5f5;font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif}
-header{padding:14px 16px;background:#181818;position:sticky;top:0;z-index:5;font-weight:800;font-size:19px}
-main{max-width:960px;margin:auto;padding:10px}
-#camera{width:100%;background:#000;border-radius:14px;overflow:hidden;display:flex;justify-content:center}
-#camera video{width:100%;height:auto;max-height:65vh;object-fit:contain}
-.controls{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
-button{border:0;border-radius:11px;padding:14px 8px;font-size:15px;font-weight:800}
-.primary{background:#fff;color:#111}.secondary{background:#2b2b2b;color:#fff}
-button:disabled{opacity:.45}
-#status{min-height:40px;padding:8px 2px;color:#bbb}
-#ocr{white-space:pre-wrap;background:#181818;border-radius:10px;padding:10px;font:12px/1.4 ui-monospace,monospace;color:#bbb;max-height:180px;overflow:auto}
-.wrap{overflow:auto;margin-top:10px;border-radius:10px}
-table{width:100%;min-width:930px;border-collapse:collapse;background:#181818;font-size:13px}
-th,td{padding:9px;border-bottom:1px solid #333;text-align:left;vertical-align:top}th{background:#222}
-.small{color:#888;font-size:12px;line-height:1.4}
-</style>
-</head>
-<body>
-<header>PriceTag Scanner</header>
-<main>
-<div id="camera"></div>
-<div class="controls">
-<button id="start" class="primary">ЗАПУСТИТЬ КАМЕРУ</button>
-<button id="scan" class="secondary">СКАНИРОВАТЬ ЦЕННИК</button>
-<button id="export" class="secondary">ЭКСПОРТ XLSX</button>
-<button id="clear" class="secondary">ОЧИСТИТЬ</button>
-</div>
-<div id="status">Готов.</div>
-<div class="small">
-Подход: 1) детектор 2D/QR отдельно; 2) 4 ориентации; 3) цена — только из крупной числовой области;
-4) единица только шт / кг / 100г; 5) английские буквы и «|» в названии запрещены.
-</div>
-<div id="ocr"></div>
-<div class="wrap"><table>
-<thead><tr><th>Название</th><th>Цена</th><th>Код товара</th><th>Мера</th><th>Дата</th><th>2D-код</th></tr></thead>
-<tbody id="rows"></tbody>
-</table></div>
-</main>
-
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script>
@@ -67,16 +19,23 @@ function render() {
 
 function clean(s) {
   s = String(s || "")
-    .replace(/[|¦∥ǀ]/g, " ")          // | вообще не должен появляться
-    .replace(/[A-Za-z]/g, "")           // английские буквы — вон
+    // 1. ИСПРАВЛЯЕМ OCR-ошибки ЕДИНИЦ И РУБЛЯ *ДО* удаления английских букв!
+    .replace(/к\s*r\b/gi, "кг")
+    .replace(/100\s*r\b/gi, "100г")
+    .replace(/ш\s*t\b/gi, "шт")
+    .replace(/\b[Pp]\b/g, "₽") // Одиночная P/p (англ) как отдельное слово -> ₽
+    .replace(/[|¦∥ǀ]/g, " ")
+    // 2. Теперь безопасно удаляем оставшиеся английские буквы
+    .replace(/[A-Za-z]/g, "")
     .replace(/\s+/g, " ")
     .trim();
-  // частые OCR-ошибки русских слов
+  
+  // 3. Исправляем русские слова
   s = s
-    .replace(/\b[Xx][еeё]\b/giu, "Хе")
-    .replace(/\b[PРR]\b/g, "₽")
-    .replace(/\b[RР][Ыы]бн(?:ый|ьи|ь[ыи])\s+цех\b/iu, "Рыбный цех")
+    .replace(/\b[XxХх][еeё]\b/giu, "Хе")
+    .replace(/\bРыбн(?:ый|ьи|ь[ыи])\s+цех\b/iu, "Рыбный цех")
     .replace(/\bтолстолобика?\b/iu, "толстолобика");
+    
   return s.replace(/^[\s.,:;=_-]+|[\s.,:;=_-]+$/g, "");
 }
 
@@ -94,7 +53,6 @@ function rotate(src, deg) {
   return c;
 }
 
-// Простая попытка «вырезать» сам ценник: ищем самый контрастный прямоугольник
 function cropPriceTag(src) {
   const maxSide = 1600;
   const scale = Math.min(1, maxSide / Math.max(src.width, src.height));
@@ -107,13 +65,12 @@ function cropPriceTag(src) {
 
   const im = ctx.getImageData(0, 0, w, h);
   const d = im.data;
-  // бинаризация + поиск bounding box нечёрных пикселей
   let minX = w, minY = h, maxX = 0, maxY = 0;
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4;
       const yv = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-      const v = yv > 140 ? 255 : 0;          // белый фон ценника
+      const v = yv > 140 ? 255 : 0;
       d[i] = d[i + 1] = d[i + 2] = v;
       if (v > 200) {
         if (x < minX) minX = x;
@@ -125,7 +82,6 @@ function cropPriceTag(src) {
   }
   ctx.putImageData(im, 0, 0);
 
-  // если нашли осмысленный прямоугольник — кропаем с небольшим запасом
   if (maxX - minX > w * 0.25 && maxY - minY > h * 0.15) {
     const pad = 8;
     minX = Math.max(0, minX - pad);
@@ -138,11 +94,10 @@ function cropPriceTag(src) {
     out.getContext("2d").drawImage(c, minX, minY, out.width, out.height, 0, 0, out.width, out.height);
     return out;
   }
-  return c; // fallback — весь кадр
+  return c;
 }
 
 function prep(src) {
-  // усиление контраста + серый
   const max = 1400;
   const scale = Math.min(1, max / Math.max(src.width, src.height));
   const c = document.createElement("canvas");
@@ -172,7 +127,6 @@ async function ensureWorker() {
         $("status").textContent = "Распознавание " + Math.round((m.progress || 0) * 100) + "%";
     }
   });
-  // PSM 6 = assume a single uniform block of text (лучше для ценника)
   await worker.setParameters({
     tessedit_pageseg_mode: "6",
     preserve_interword_spaces: "1",
@@ -190,49 +144,76 @@ function wordsFrom(data) {
   })).filter(w => w.text);
 }
 
-/* ---------- ЦЕНА: только крупная числовая область ---------- */
+/* ---------- ЦЕНА: крупные цифры + приоритет тем, что рядом с ₽ ---------- */
 function extractPrice(data) {
   const ws = wordsFrom(data);
-  // ищем слова, которые выглядят как цена (1–6 цифр, возможно с запятой)
   const candidates = [];
+  
+  // Находим все слова, которые могут быть знаком рубля
+  const rubleWords = ws.filter(w => /[₽рРpP]/.test(w.text) || /руб/i.test(w.text));
+  
   for (const w of ws) {
-    const t = w.text.replace(/,/g, ".").replace(/[^\d.]/g, "");
+    const originalText = w.text;
+    const t = originalText.replace(/,/g, ".").replace(/[^\d.]/g, "");
     if (!/^\d{1,6}(?:\.\d{1,2})?$/.test(t)) continue;
     const num = Number(t);
     if (num < 1 || num > 999999) continue;
-    // «крупность» = высота bbox
-    candidates.push({ value: t, score: w.h * (w.conf / 50), conf: w.conf });
+    
+    // Базовый скор на основе высоты (крупные цифры)
+    let score = w.h * (w.conf / 50);
+    
+    // Проверяем, есть ли знак рубля поблизости (справа от числа)
+    const isNearRuble = rubleWords.some(rw => {
+      const horizontalDist = rw.bbox.x0 - w.bbox.x1;
+      const verticalDist = Math.abs(rw.bbox.y0 - w.bbox.y0);
+      // Рубль должен быть справа (или чуть-чуть слева, если прилип) и на той же строке
+      return horizontalDist > -30 && horizontalDist < 200 && verticalDist < w.h * 1.5;
+    });
+    
+    if (isNearRuble || /[₽рРpP]/.test(originalText) || /руб/i.test(originalText)) {
+      score += 2000; // Огромный приоритет числам рядом с рублём
+    }
+    
+    candidates.push({ value: t, score: score, conf: w.conf });
   }
   if (!candidates.length) return "";
-  // берём самую крупную + уверенную
   candidates.sort((a, b) => b.score - a.score);
   return candidates[0].value;
 }
 
-/* ---------- ДАТА ---------- */
+/* ---------- ДАТА: поддержка двухэтажной даты (например, "29.08.2 6") ---------- */
 function extractDate(text) {
   const t = String(text || "").replace(/\s+/g, " ");
-  // 29.08.26  /  29/08/26  /  29-08-2026
+  // 1. Обычная дата: 29.08.26 или 29.08.2026
   let m = t.match(/\b(0?[1-9]|[12]\d|3[01])\s*[./-]\s*(0?[1-9]|1[0-2])\s*[./-]\s*(20\d{2}|\d{2})\b/);
-  if (!m) {
-    const compact = t.replace(/(\d)\s+(?=\d)/g, "$1");
-    m = compact.match(/\b(0?[1-9]|[12]\d|3[01])[./-](0?[1-9]|1[0-2])[./-](20\d{2}|\d{2})\b/);
+  if (m) {
+    let y = m[3];
+    if (y.length === 2) y = "20" + y;
+    return `${m[1].padStart(2, "0")}.${m[2].padStart(2, "0")}.${y.slice(-2)}`;
   }
-  if (!m) return "";
-  let y = m[3];
-  if (y.length === 2) y = "20" + y;
-  return `${m[1].padStart(2, "0")}.${m[2].padStart(2, "0")}.${y.slice(-2)}`;
+  // 2. Двухэтажная дата: 29.08.2 6 (или 29.08.2 \n 6)
+  m = t.match(/\b(0?[1-9]|[12]\d|3[01])\s*[./-]\s*(0?[1-9]|1[0-2])\s*[./-]\s*(\d)\s+(\d)\b/);
+  if (m) {
+    let y = "20" + m[3] + m[4];
+    return `${m[1].padStart(2, "0")}.${m[2].padStart(2, "0")}.${y.slice(-2)}`;
+  }
+  return "";
 }
 
-/* ---------- ЕДИНИЦА: только шт / кг / 100г ---------- */
+/* ---------- ЕДИНИЦА: максимальная устойчивость к OCR-ошибкам ---------- */
 function extractUnit(text) {
-  const t = String(text || "").toLowerCase()
-    .replace(/кr|кг\./g, "кг")
-    .replace(/\bк\s*г\b/g, "кг")
-    .replace(/100\s*г/g, "100г");
-  if (/\b100г\b/.test(t)) return "100г";
-  if (/\bкг\b/.test(t)) return "кг";
-  if (/\bшт\b/.test(t)) return "шт";
+  const t = String(text || "").toLowerCase();
+  // Нормализуем частые ошибки OCR для единиц измерения
+  const normalized = t
+    .replace(/к\s*[rг]\.?\s*/g, "кг")
+    .replace(/100\s*[rг]\.?\s*/g, "100г")
+    .replace(/ш\s*т\.?\s*/g, "шт")
+    .replace(/к\s*г/g, "кг");
+  
+  if (/\b100г\b/.test(normalized) || normalized.includes("100г")) return "100г";
+  if (/\bкг\b/.test(normalized) || normalized.includes("кг")) return "кг";
+  if (/\bшт\b/.test(normalized) || normalized.includes("шт")) return "шт";
+  
   return "";
 }
 
@@ -244,7 +225,7 @@ function nameScore(s) {
   if (/\bхе\b/iu.test(s)) n += 60;
   if (/толстолобик/iu.test(s)) n += 80;
   if (/\bиз\b/iu.test(s)) n += 20;
-  if (/\d{7,}/.test(s)) n -= 200;          // не берём код товара
+  if (/\d{7,}/.test(s)) n -= 200;
   if (/^(?:кг|шт|100г|руб|₽)$/iu.test(s)) n -= 300;
   return n + Math.min(50, s.length);
 }
@@ -254,10 +235,23 @@ function extractName(text, price, unit, date, barcode) {
   const out = [];
   for (let line of lines) {
     let s = line;
-    if (price) s = s.replace(new RegExp("(?<!\\d)" + price.replace(".", "[.,]") + "\\s*(?:₽|руб\\.?)?", "iu"), " ");
-    if (date)  s = s.replace(new RegExp(date.replace(/\./g, "[.]?\\s*"), "i"), " ");
+    if (price) {
+      s = s.replace(new RegExp("(?<!\\d)" + price.replace(".", "[.,]") + "\\s*(?:₽|руб\\.?)?", "iu"), " ");
+    }
+    if (date) {
+      // Удаляем дату, учитывая возможный разрыв (двухэтажная)
+      const dParts = date.split(".");
+      if (dParts.length === 3) {
+        const dateRegex = new RegExp(`${dParts[0]}\\s*[./-]\\s*${dParts[1]}\\s*[./-]\\s*${dParts[2].charAt(0)}\\s*${dParts[2].charAt(1)}`, "i");
+        s = s.replace(dateRegex, " ");
+        s = s.replace(new RegExp(date.replace(/\./g, "[./-]?\\s*"), "i"), " ");
+      }
+    }
     if (barcode) s = s.replace(barcode, " ");
-    if (unit)  s = s.replace(new RegExp("\\b" + unit + "\\b", "iu"), " ");
+    if (unit) {
+      const unitRegex = new RegExp(unit.replace("100г", "100\\s*г").replace("кг", "к\\s*[rг]").replace("шт", "ш\\s*т"), "iu");
+      s = s.replace(unitRegex, " ");
+    }
     s = clean(s);
     if (!/[А-Яа-яЁё]/.test(s)) continue;
     if (/^(?:₽|руб|кг|шт|100г)$/iu.test(s)) continue;
@@ -269,7 +263,7 @@ function extractName(text, price, unit, date, barcode) {
 
 function parse(data, codes) {
   const text = clean(data.text || "");
-  const price = extractPrice(data);               // ← только крупная область
+  const price = extractPrice(data);
   const unit  = extractUnit(text);
   const date  = extractDate(text);
 
@@ -277,7 +271,6 @@ function parse(data, codes) {
   const one = codes.find(x => /^(ean_13|ean_8|upc_a|upc_e|code_128|code_39|itf|codabar)$/i.test(x.format));
 
   const code2d = two?.rawValue || "";
-  // если QR содержит 13-значный код — это код товара
   let barcode = one?.rawValue || "";
   if (!barcode && /^\d{8,14}$/.test(code2d)) barcode = code2d;
 
@@ -300,7 +293,7 @@ function parse(data, codes) {
 
 async function ocrOrientation(base, deg, codes) {
   const rotated = rotate(base, deg);
-  const cropped = cropPriceTag(rotated);   // сначала вырезаем ценник
+  const cropped = cropPriceTag(rotated);
   const prepared = prep(cropped);
   const data = await worker.recognize(prepared);
   return { deg, ...parse(data, codes) };
@@ -335,11 +328,10 @@ async function capture() {
     full.height = v.videoHeight;
     full.getContext("2d").drawImage(v, 0, 0);
 
-    const codes = await detectCodes(full);   // QR/штрихкод — только декодером
+    const codes = await detectCodes(full);
     await ensureWorker();
 
     const results = [];
-    // всегда все 4 ориентации
     for (const deg of [0, 90, 180, 270]) {
       results.push(await ocrOrientation(full, deg, codes));
     }
@@ -348,7 +340,6 @@ async function capture() {
       (b.useful + b.confidence * 0.4) - (a.useful + a.confidence * 0.4)
     )[0];
 
-    // ещё раз подтягиваем код из детектора (на случай если OCR его пропустил)
     const two = codes.find(x => /^(qr_code|data_matrix|pdf417|aztec)$/i.test(x.format));
     const one = codes.find(x => /^(ean_13|ean_8|upc_a|upc_e|code_128|code_39|itf|codabar)$/i.test(x.format));
     best.code2d = two?.rawValue || best.code2d || "";
@@ -432,5 +423,3 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("sw.js").catch(() => {});
 }
 </script>
-</body>
-</html>
