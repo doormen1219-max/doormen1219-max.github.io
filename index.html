@@ -7,21 +7,7 @@
 <link rel="manifest" href="manifest.json">
 <title>PriceTag Scanner</title>
 <style>
-*{box-sizing:border-box}body{margin:0;background:#111;color:#fff;font-family:Arial,sans-serif}
-header{padding:14px 16px;font-size:20px;font-weight:700;background:#181818;position:sticky;top:0;z-index:3}
-main{max-width:800px;margin:auto;padding:10px}
-#reader{width:100%;background:#000;border-radius:12px;overflow:hidden;min-height:280px}
-#reader video{display:block;width:100%;height:auto;max-height:60vh;object-fit:contain}
-.controls{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
-button{border:0;border-radius:10px;padding:14px 8px;font-size:15px;font-weight:700}
-.primary{background:#fff;color:#111}.secondary{background:#333;color:#fff}
-#status{padding:9px 2px;color:#bbb;min-height:38px}
-#count{font-size:14px;color:#aaa;margin:6px 0 10px}
-.wrap{overflow:auto;border-radius:10px}
-table{width:100%;min-width:700px;border-collapse:collapse;background:#191919;font-size:13px}
-th,td{padding:8px;border-bottom:1px solid #333;text-align:left;vertical-align:top}
-th{background:#222;position:sticky;top:0}
-.small{font-size:12px;color:#888;line-height:1.4;margin:8px 0}
+*{box-sizing:border-box}body{margin:0;background:#111;color:#fff;font-family:Arial,sans-serif}header{padding:14px 16px;font-size:20px;font-weight:700;background:#181818;position:sticky;top:0;z-index:3}main{max-width:900px;margin:auto;padding:10px}#reader{width:100%;background:#000;border-radius:12px;overflow:hidden;min-height:280px}#reader video{display:block;width:100%;height:auto;max-height:60vh;object-fit:contain}.controls{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}button{border:0;border-radius:10px;padding:14px 8px;font-size:15px;font-weight:700}.primary{background:#fff;color:#111}.secondary{background:#333;color:#fff}button:disabled{opacity:.5}#status{padding:9px 2px;color:#bbb;min-height:38px}#count{font-size:14px;color:#aaa;margin:6px 0 10px}.wrap{overflow:auto;border-radius:10px}table{width:100%;min-width:850px;border-collapse:collapse;background:#191919;font-size:13px}th,td{padding:8px;border-bottom:1px solid #333;text-align:left;vertical-align:top}th{background:#222;position:sticky;top:0}.small{font-size:12px;color:#888;line-height:1.4;margin:8px 0}
 </style>
 </head>
 <body>
@@ -36,149 +22,74 @@ th{background:#222;position:sticky;top:0}
 </div>
 <div id="status">Готов.</div>
 <div id="count">Отсканировано: 0</div>
-<div class="small">Цена берётся только как число непосредственно перед «₽/руб». Мера: шт, 100г, 1кг, 100мл, 1л и т.п. Штрихкод/2D-код определяется камерой отдельно.</div>
-<div class="wrap">
-<table><thead><tr>
-<th>Название</th><th>Цена</th><th>Штрихкод</th><th>Мера</th><th>Дата</th><th>2D-код</th>
-</tr></thead><tbody id="rows"></tbody></table>
-</div>
+<div class="small">QR/DataMatrix хранится отдельно и, если внутри находится 8–14 цифр, эти цифры автоматически используются как код товара.</div>
+<div class="wrap"><table><thead><tr><th>Название</th><th>Цена</th><th>Штрихкод / код товара</th><th>Мера</th><th>Дата</th><th>2D-код</th></tr></thead><tbody id="rows"></tbody></table></div>
 </main>
-
-<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script>
-let stream=null,worker=null,rows=JSON.parse(localStorage.getItem("priceRowsV2")||"[]");
+let stream=null,worker=null,rows=JSON.parse(localStorage.getItem("priceRowsV3")||"[]");
 const $=id=>document.getElementById(id);
 function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
-function render(){
- $("rows").innerHTML=rows.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.price)}</td><td>${esc(r.barcode)}</td><td>${esc(r.unit)}</td><td>${esc(r.date)}</td><td>${esc(r.code2d)}</td></tr>`).join("");
- $("count").textContent="Отсканировано: "+rows.length;
- localStorage.setItem("priceRowsV2",JSON.stringify(rows));
-}
-function parseText(text,codes){
- const lines=text.split(/\\n/).map(x=>x.trim().replace(/\\s+/g," ")).filter(Boolean);
-
- // 1) PRICE: deliberately require the currency marker immediately after the number.
- // Supports 89 ₽, 89.90 ₽, 89,90 руб, 89р.
- const priceMatches=[...text.matchAll(/(?<![\\d.,])([0-9]{1,6}(?:[.,][0-9]{1,2})?)\\s*(?:₽|руб(?:\\.?|лей)?|р\\.)(?![\\p{L}])/giu)];
- const price=priceMatches.length?priceMatches[priceMatches.length-1][1].replace(",","."):"";
-
- // 2) MEASURE: 100г, 1кг, 100 мл, 1 л, шт and common variants.
- const measureRegex=/\\b(?:\\d+(?:[.,]\\d+)?\\s*(?:кг|г|мг|л|мл|м|см|мм|шт|уп|упак\\.?|порц\\.?|пара|пачк\\.?|бут\\.?)|шт)\\b/iu;
- let unit=(text.match(measureRegex)||[""])[0].replace(/\\s+/g," ").trim();
-
- // 3) DATE
- const date=(text.match(/\\b\\d{1,2}[./-]\\d{1,2}[./-]\\d{2,4}\\b/)||[""])[0];
-
- // 4) BARCODE: prefer a 1D code detected by BarcodeDetector; fallback to a long numeric
- // sequence visible in OCR. EAN/UPC are kept as digits only.
- const oneD=codes.find(x=>/^(EAN_13|EAN_8|UPC_A|UPC_E|CODE_128|CODE_39|ITF|CODABAR)$/.test(x.format));
- let barcode=oneD?.rawValue||"";
- if(!barcode){
-   const nums=[...text.matchAll(/(?<!\\d)(\\d{8}|\\d{12,14})(?!\\d)/g)].map(m=>m[1]);
-   barcode=nums[0]||"";
- }
-
- // 5) 2D: QR/DataMatrix/PDF417/Aztec values are separate.
- const twoD=codes.find(x=>/^(QR_CODE|DATA_MATRIX|PDF417|AZTEC)$/.test(x.format));
- const code2d=twoD?.rawValue||"";
-
- // 6) NAME: choose the strongest text line, excluding price/date/measure/barcode and
- // common administrative lines. Prefer lines containing several letters.
- const candidates=lines.filter(line=>{
-   if(!/[A-Za-zА-Яа-яЁё]/.test(line)) return false;
-   if(price && line.replace(",",".").includes(price)) return false;
-   if(date && line.includes(date)) return false;
-   if(unit && line.toLowerCase()===unit.toLowerCase()) return false;
-   if(barcode && line.replace(/\\D/g,"")===barcode) return false;
-   if(code2d && line===code2d) return false;
-   if(/^(?:шт|кг|г|мл|л|руб\\.?|₽)$/iu.test(line)) return false;
-   return true;
- });
- const name=(candidates.sort((a,b)=>scoreName(b)-scoreName(a))[0]||"").trim();
-
- return {name,price,barcode,unit,date,code2d,raw:text};
-}
-function scoreName(s){
- let n=s.length;
- if(/[А-Яа-яЁё]/.test(s)) n+=40;
- if(/\\b(?:ИП|ООО|АО|ЗАО)\\b/iu.test(s)) n-=35;
- if(/(?:магазин|касса|продавец|поставщик)/iu.test(s)) n-=15;
- if(/\\d{8,14}/.test(s)) n-=50;
- return n;
-}
-async function getOCR(canvas){
- $("status").textContent="OCR...";
- if(!worker){
-   worker=await Tesseract.createWorker("rus+eng",1,{
-     logger:m=>{if(m.status==="recognizing text")$("status").textContent="OCR "+Math.round(m.progress*100)+"%";}
-   });
- }
- const {data}=await worker.recognize(canvas);
- return data.text||"";
-}
-async function detectCodes(canvas){
- let out=[];
- if("BarcodeDetector" in window){
-   try{
-     const formats=await BarcodeDetector.getSupportedFormats();
-     const wanted=["qr_code","data_matrix","pdf417","aztec","code_128","code_39","ean_13","ean_8","upc_a","upc_e","itf","codabar"];
-     const use=wanted.filter(x=>formats.includes(x));
-     const d=new BarcodeDetector({formats:use});
-     out=await d.detect(canvas);
-   }catch(e){}
- }
+function render(){$("rows").innerHTML=rows.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.price)}</td><td>${esc(r.barcode)}</td><td>${esc(r.unit)}</td><td>${esc(r.date)}</td><td>${esc(r.code2d)}</td></tr>`).join("");$("count").textContent="Отсканировано: "+rows.length;localStorage.setItem("priceRowsV3",JSON.stringify(rows));}
+function normalizeOCR(s){return s.replace(/[|¦]/g," ").replace(/\bX[еe]\b/gu,"Хе").replace(/\b[xX][еe]\b/gu,"Хе").replace(/\b[PРр]\.?\s*[-–—.]?\s*$/g," ₽");}
+function cleanName(s){s=normalizeOCR(s).replace(/\s+/g," ").trim();s=s.replace(/^[-_=|]+\s*/g,"").replace(/\s*[-_=|]+$/g,"");s=s.replace(/\bРыбный\s+цех\.?/iu,"Рыбный цех.");return s.trim();}
+function extractDate(text){let t=text.replace(/(\d)\s+(?=\d)/g,"$1");let m=t.match(/\b(\d{1,2})\s*[./-]\s*(\d{1,2})\s*[./-]\s*(\d{1,4})\b/);if(!m)return"";let y=m[3];if(y.length===1)y="2"+y;else if(y.length===2)y="20"+y;return `${m[1].padStart(2,"0")}.${m[2].padStart(2,"0")}.${y}`;}
+function extractUnit(text){let t=text.replace(/кr/giu,"кг").replace(/кг\./giu,"кг");let m=t.match(/(?:^|[^А-Яа-яЁёA-Za-z0-9])(шт|кг|г|мг|л|мл|м|см|мм|уп|упак\.?|порц\.?|пара|пачк\.?|бут\.?)\s*(?:$|[^А-Яа-яЁёA-Za-z0-9])/iu);return m?m[1].replace(/\.$/,"").toLowerCase():"";}
+function numeric2D(code){let s=String(code||"").trim();return /^\d{8,14}$/.test(s)?s:"";}
+function priceCandidates(text){
+ const out=[];
+ const normalized=text.replace(/\u00a0/g," ").replace(/[РP]/g,"₽");
+ const re=/(?<![\d.,])([0-9]{1,6}(?:[.,][0-9]{1,2})?)\s*(?:₽|руб(?:\.?|лей)?|р\.)(?![\p{L}])/giu;
+ for(const m of normalized.matchAll(re))out.push({value:m[1].replace(",","."),index:m.index,raw:m[0]});
  return out;
 }
-async function capture(){
- if(!stream){$("status").textContent="Сначала запусти камеру.";return;}
- const v=document.querySelector("#reader video");
- if(!v||!v.videoWidth){$("status").textContent="Камера ещё запускается.";return;}
- $("scan").disabled=true;
- $("status").textContent="Снимаю...";
- const c=document.createElement("canvas");
- c.width=v.videoWidth;c.height=v.videoHeight;
- c.getContext("2d",{willReadFrequently:true}).drawImage(v,0,0);
- try{
-   const codes=await detectCodes(c);
-   const text=await getOCR(c);
-   const row=parseText(text,codes);
-   rows.push(row);render();
-   $("status").textContent=`Готово #${rows.length}: ${row.name||"название не найдено"} | ${row.price?row.price+" ₽":"цена не найдена"}`;
- }catch(e){$("status").textContent="Ошибка: "+e.message;}
- $("scan").disabled=false;
+function extractPrice(text,lines){
+ let c=priceCandidates(text);
+ if(c.length)return c.sort((a,b)=>Number(b.value)-Number(a.value))[0].value;
+ // OCR often splits the currency/number or turns ₽ into P/Р. Search line by line.
+ for(const line of lines){
+   const x=line.replace(/[|¦]/g," ").replace(/\s+/g," ");
+   const m=x.match(/(?<![\d.,])([0-9]{1,6}(?:[.,][0-9]{1,2})?)\s*(?:P|Р|p|р|руб|₽)\s*[-–—.]?/u);
+   if(m)return m[1].replace(",",".");
+ }
+ // Last resort: select the largest standalone number that is not a date/code/measure.
+ const nums=[...text.matchAll(/(?<![\d.])([0-9]{1,6})(?![\d.])/g)].map(m=>m[1]).filter(n=>+n>0&&+n<100000);
+ const filtered=nums.filter(n=>!/^\d{1,2}$/.test(n)||+n>30);
+ return filtered.length?filtered.sort((a,b)=>+b-+a)[0]:"";
 }
-async function startCamera(){
- try{
-   stream=await navigator.mediaDevices.getUserMedia({
-     video:{facingMode:{ideal:"environment"},width:{ideal:1920},height:{ideal:1080}},
-     audio:false
-   });
-   const video=document.createElement("video");
-   video.autoplay=true;video.playsInline=true;video.muted=true;video.srcObject=stream;
-   $("reader").innerHTML="";$("reader").appendChild(video);
-   $("status").textContent="Камера готова.";
- }catch(e){$("status").textContent="Нет доступа к камере: "+e.message;}
+function scoreName(s){let n=s.length;if(/[А-Яа-яЁё]/.test(s))n+=50;if(/[A-Za-z]/.test(s)&&!/[А-Яа-яЁё]/.test(s))n-=20;if(/\b(?:ИП|ООО|АО|ЗАО)\b/iu.test(s))n-=35;if(/(?:магазин|касса|продавец|поставщик)/iu.test(s))n-=20;if(/\d{8,14}/.test(s))n-=80;if(/^[\d\s.,₽PР-]+$/u.test(s))n-=100;return n;}
+function parseText(text,codes){
+ text=normalizeOCR(text);
+ const lines=text.split(/\n+/).map(x=>x.trim().replace(/\s+/g," ")).filter(Boolean);
+ const price=extractPrice(text,lines);
+ const unit=extractUnit(text);
+ const date=extractDate(text);
+ const oneD=codes.find(x=>/^(EAN_13|EAN_8|UPC_A|UPC_E|CODE_128|CODE_39|ITF|CODABAR)$/i.test(x.format));
+ const twoD=codes.find(x=>/^(QR_CODE|DATA_MATRIX|PDF417|AZTEC)$/i.test(x.format));
+ const code2d=twoD?.rawValue||"";
+ let barcode=oneD?.rawValue||numeric2D(code2d);
+ if(!barcode){const nums=[...text.matchAll(/(?<!\d)(\d{8}|\d{12,14})(?!\d)/g)].map(m=>m[1]);barcode=nums[0]||"";}
+ const candidates=lines.filter(line=>{
+   if(!/[A-Za-zА-Яа-яЁё]/.test(line))return false;
+   if(price&&line.replace(",",".").includes(price))return false;
+   if(date&&line.replace(/\s/g,"").includes(date))return false;
+   if(unit&&line.toLowerCase().replace(/\./g,"")===unit.toLowerCase())return false;
+   if(barcode&&line.replace(/\D/g,"")===barcode)return false;
+   if(code2d&&line===code2d)return false;
+   if(/^(?:шт|кг|г|мл|л|руб\.?|₽|р\.?|p)$/iu.test(line))return false;
+   return true;
+ });
+ let name=cleanName(candidates.sort((a,b)=>scoreName(b)-scoreName(a))[0]||"");
+ // Typical OCR confusion on this exact label and similar Russian labels.
+ name=name.replace(/\b(?:Xe|Xе|xе|xe)\b/g,"Хе");
+ return{name,price,barcode,unit,date,code2d,raw:text};
 }
-$("start").onclick=startCamera;
-$("scan").onclick=capture;
-$("clear").onclick=()=>{if(confirm("Удалить все строки?")){rows=[];render();}};
-$("export").onclick=()=>{
- if(!rows.length){$("status").textContent="Нет данных.";return;}
- const data=rows.map((r,i)=>({
-   "№":i+1,"Название":r.name,"Цена":r.price,"Штрихкод":r.barcode,
-   "Мера":r.unit,"Дата":r.date,"2D-код":r.code2d
- }));
- const ws=XLSX.utils.json_to_sheet(data);
- ws["!cols"]=[{wch:42},{wch:12},{wch:18},{wch:12},{wch:14},{wch:45}];
- const wb=XLSX.utils.book_new();
- XLSX.utils.book_append_sheet(wb,ws,"Ценники");
- XLSX.writeFile(wb,"price_tags.xlsx");
- $("status").textContent="XLSX сохранён.";
-};
-render();
-if("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(()=>{});
+async function getOCR(canvas){$("status").textContent="OCR...";if(!worker){worker=await Tesseract.createWorker("rus+eng",1,{logger:m=>{if(m.status==="recognizing text")$("status").textContent="OCR "+Math.round(m.progress*100)+"%";}});}const {data}=await worker.recognize(canvas);return data.text||"";}
+async function detectCodes(canvas){let out=[];if("BarcodeDetector" in window){try{const formats=await BarcodeDetector.getSupportedFormats();const wanted=["qr_code","data_matrix","pdf417","aztec","code_128","code_39","ean_13","ean_8","upc_a","upc_e","itf","codabar"];const use=wanted.filter(x=>formats.includes(x));if(use.length)out=await new BarcodeDetector({formats:use}).detect(canvas);}catch(e){}}return out;}
+async function capture(){if(!stream){$("status").textContent="Сначала запусти камеру.";return;}const v=document.querySelector("#reader video");if(!v||!v.videoWidth){$("status").textContent="Камера ещё запускается.";return;}$("scan").disabled=true;try{const c=document.createElement("canvas");c.width=v.videoWidth;c.height=v.videoHeight;c.getContext("2d",{willReadFrequently:true}).drawImage(v,0,0);const codes=await detectCodes(c);const text=await getOCR(c);const row=parseText(text,codes);rows.push(row);render();$("status").textContent=`Готово #${rows.length}: ${row.name||"название не найдено"} | ${row.price?row.price+" ₽":"цена не найдена"} | ${row.unit||"мера не найдена"}`;}catch(e){$("status").textContent="Ошибка: "+e.message;}finally{$("scan").disabled=false;}}
+async function startCamera(){try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1920},height:{ideal:1080}},audio:false});const video=document.createElement("video");video.autoplay=true;video.playsInline=true;video.muted=true;video.srcObject=stream;$("reader").innerHTML="";$("reader").appendChild(video);$("status").textContent="Камера готова.";}catch(e){$("status").textContent="Нет доступа к камере: "+e.message;}}
+$("start").onclick=startCamera;$("scan").onclick=capture;$("clear").onclick=()=>{if(confirm("Удалить все строки?")){rows=[];render();}};$("export").onclick=()=>{if(!rows.length){$("status").textContent="Нет данных.";return;}const data=rows.map((r,i)=>({"№":i+1,"Название":r.name,"Цена":r.price,"Штрихкод / код товара":r.barcode,"Мера":r.unit,"Дата":r.date,"2D-код":r.code2d}));const ws=XLSX.utils.json_to_sheet(data);ws["!cols"]=[{wch:8},{wch:42},{wch:12},{wch:22},{wch:12},{wch:14},{wch:35}];const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Ценники");XLSX.writeFile(wb,"price_tags.xlsx");$("status").textContent="XLSX сохранён.";};render();if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
 </script>
 </body>
 </html>
